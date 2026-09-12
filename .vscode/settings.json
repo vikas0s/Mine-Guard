@@ -1,0 +1,13 @@
+{
+  "python.defaultInterpreterPath": "c:\\Users\\vikas\\OneDrive\\Desktop\\Mine Guard\\backend\\.venv\\Scripts\\python.exe",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/service",
+    "${workspaceFolder}/service/model"
+  ],
+  "python.autoComplete.extraPaths": [
+    "${workspaceFolder}/service",
+    "${workspaceFolder}/service/model"
+  ],
+  "css.lint.unknownAtRules": "ignore",
+  "scss.lint.unknownAtRules": "ignore"
+}
