@@ -105,6 +105,10 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
     else:
         disp = 0.0
 
+    ir_triggered = bool(node_data.get("irTriggered", node_data.get("ir_triggered", False)))
+    if ir_triggered and disp == 0.0:
+        disp = 3.0  # Crack opening detected by IR sensor
+
     features = build_features_for_node(node_id, node_data)
     ml_result = predictor.predict_mine_risk(features)
 
@@ -112,7 +116,8 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
         model_risk_level=ml_result.get("risk_level", "NORMAL"),
         critical_probability=ml_result.get("critical_probability", 0.0),
         tilt=tilt,
-        displacement=disp
+        displacement=disp,
+        ir_triggered=ir_triggered
     )
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -132,6 +137,7 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
         "distanceChange": float(node_data.get("distanceChange", 0.0) or 0.0),
         "vibrationRms": float(node_data.get("vibrationRms", node_data.get("vibration", 0.0)) or 0.0),
         "vibration": float(node_data.get("vibrationRms", node_data.get("vibration", 0.0)) or 0.0),
+        "irTriggered": ir_triggered,
         "riskLevel": final_risk["riskLevel"],
         "riskScore": final_risk["riskScore"],
         "buzzerState": final_risk["buzzerState"],
@@ -501,9 +507,18 @@ def ingest_reading():
         return jsonify({"error": f"Invalid numeric sensor value: {e}"}), 400
 
     for extra in ["vibration", "temperature", "humidity", "batteryPercentage", "flame", "groundMovement",
-                  "risk_score", "riskScore", "risk_level", "riskLevel"]:
+                  "risk_score", "riskScore", "risk_level", "riskLevel", "ir_triggered", "irTriggered"]:
         if extra in data:
             reading_doc[extra] = data[extra]
+
+    ir_triggered_raw = data.get("ir_triggered", data.get("irTriggered"))
+    if ir_triggered_raw is not None:
+        ir_flag = bool(ir_triggered_raw)
+        reading_doc["irTriggered"] = ir_flag
+        reading_doc["ir_triggered"] = ir_flag
+        if ir_flag and reading_doc["displacement"] == 0.0:
+            reading_doc["displacement"] = 3.0
+            reading_doc["distanceChange"] = 3.0
 
     try:
         db.collection("readings").add(reading_doc)

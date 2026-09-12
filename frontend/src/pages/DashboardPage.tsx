@@ -297,24 +297,51 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       {/* Primary Telemetry Cards (5 Core Metrics) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
 
-        {/* 1. Distance (Ultrasonic) */}
-        <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
+        {/* 1. Distance / IR Crack Sensor */}
+        <div className={`rounded-xl p-5 border shadow-sm flex flex-col justify-between ${
+          node.irTriggered
+            ? 'bg-red-50/50 border-red-300 ring-2 ring-red-400/20'
+            : 'bg-white border-slate-200'
+        }`}>
           <div className="flex items-center justify-between text-slate-500">
-            <span className="text-xs font-semibold uppercase tracking-wider">Distance (Ultrasonic)</span>
-            <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
+            <span className="text-xs font-semibold uppercase tracking-wider">
+              {node.irTriggered !== undefined ? 'Crack / IR Sensor' : 'Distance (Ultrasonic)'}
+            </span>
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+              node.irTriggered ? 'bg-red-100 text-red-600' : 'bg-blue-50 text-blue-600'
+            }`}>
               <Ruler className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-3">
-            <div className="text-2xl font-bold text-slate-900">
-              {distVal.toFixed(1)} <span className="text-sm font-normal text-slate-500">cm</span>
-            </div>
-            <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100 text-xs">
-              <span className="text-slate-500">Delta:</span>
-              <span className={`font-semibold ${distChange > 0 ? 'text-amber-600' : 'text-slate-700'}`}>
-                {distChange >= 0 ? `+${distChange.toFixed(1)}` : distChange.toFixed(1)} cm
-              </span>
-            </div>
+            {node.irTriggered !== undefined ? (
+              <div>
+                <div className={`text-xl font-bold flex items-center space-x-2 ${
+                  node.irTriggered ? 'text-red-700' : 'text-emerald-700'
+                }`}>
+                  <span className={`w-2.5 h-2.5 rounded-full ${node.irTriggered ? 'bg-red-600 animate-ping' : 'bg-emerald-500'}`}></span>
+                  <span>{node.irTriggered ? 'CRACK DETECTED' : 'SURFACE INTACT'}</span>
+                </div>
+                <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100 text-xs">
+                  <span className="text-slate-500">IR Signal:</span>
+                  <span className={`font-semibold ${node.irTriggered ? 'text-red-600 font-bold' : 'text-emerald-600'}`}>
+                    {node.irTriggered ? 'TRIGGERED (LOW)' : 'NORMAL (HIGH)'}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div className="text-2xl font-bold text-slate-900">
+                  {distVal.toFixed(1)} <span className="text-sm font-normal text-slate-500">cm</span>
+                </div>
+                <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100 text-xs">
+                  <span className="text-slate-500">Delta:</span>
+                  <span className={`font-semibold ${distChange > 0 ? 'text-amber-600' : 'text-slate-700'}`}>
+                    {distChange >= 0 ? `+${distChange.toFixed(1)}` : distChange.toFixed(1)} cm
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -322,19 +349,24 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
           <div className="flex items-center justify-between text-slate-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Displacement</span>
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${dispVal > 2.0 ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'
-              }`}>
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+              dispVal > 2.0 || node.irTriggered ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'
+            }`}>
               <Activity className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-3">
             <div className="text-2xl font-bold text-slate-900">
-              {dispVal.toFixed(2)} <span className="text-sm font-normal text-slate-500">cm</span>
+              {node.irTriggered ? (
+                <span className="text-amber-600">CRACK ACTIVE</span>
+              ) : (
+                <>{dispVal.toFixed(2)} <span className="text-sm font-normal text-slate-500">cm</span></>
+              )}
             </div>
             <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100 text-xs">
-              <span className="text-slate-500">Safe Limit:</span>
-              <span className={`font-semibold ${dispVal > 2.0 ? 'text-amber-600 font-bold' : 'text-emerald-600'}`}>
-                ≤ 2.00 cm
+              <span className="text-slate-500">Threshold:</span>
+              <span className={`font-semibold ${dispVal > 2.0 || node.irTriggered ? 'text-amber-600 font-bold' : 'text-emerald-600'}`}>
+                {node.irTriggered ? 'Crack Triggered' : '≤ 2.00 cm'}
               </span>
             </div>
           </div>
@@ -571,6 +603,23 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <div className="text-right">
                   <span className="text-xs font-semibold text-emerald-600">
                     {node.flame ? 'FLAME DETECTED' : 'Normal'}
+                  </span>
+                </div>
+              </div>
+
+              {/* IR Crack / Movement Sensor */}
+              <div className={`flex items-center justify-between p-2.5 rounded-lg border ${
+                node.irTriggered
+                  ? 'bg-red-50 border-red-200 animate-pulse'
+                  : 'bg-slate-50 border border-slate-100'
+              }`}>
+                <div className="flex items-center space-x-2.5">
+                  <Activity className={`w-4 h-4 ${node.irTriggered ? 'text-red-600' : 'text-slate-600'}`} />
+                  <span className="text-xs font-semibold text-slate-700">IR Crack Sensor</span>
+                </div>
+                <div className="text-right">
+                  <span className={`text-xs font-bold ${node.irTriggered ? 'text-red-700' : 'text-emerald-600'}`}>
+                    {node.irTriggered ? '⚠️ CRACK DETECTED' : 'Normal (Intact)'}
                   </span>
                 </div>
               </div>

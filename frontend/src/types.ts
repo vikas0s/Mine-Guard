@@ -27,6 +27,7 @@ export interface MonitoringNode {
   soilStatus?: string;
   rain?: boolean;
   flame?: boolean;
+  irTriggered?: boolean;
   status?: string;
   lastSeen?: string;
   lastRiskAssessment?: string;
@@ -55,6 +56,7 @@ export interface SensorReading {
   distanceChange?: number;
   groundMovement?: number;
   displacement?: number;
+  irTriggered?: boolean;
   tilt?: number;
   vibration?: number;
   vibrationRms?: number;

@@ -43,21 +43,21 @@ def map_ml_to_ui_risk(model_risk_level: str, critical_probability: float = 0.0) 
         }
 
 
-def apply_sensor_safety_override(current_risk: dict, tilt: float, displacement: float) -> dict:
+def apply_sensor_safety_override(current_risk: dict, tilt: float, displacement: float, ir_triggered: bool = False) -> dict:
     """
     Raw sensor safety net overrides independent of the model:
-    - tilt <= 10 deg AND displacement <= 2 cm -> LOW
-    - tilt > 10 deg OR displacement > 2 cm -> at least MEDIUM
-    - both tilt > 10 deg AND displacement > 2 cm severely exceeded -> HIGH
-      (severely exceeded: tilt > 25 deg OR displacement > 5 cm, or both exceeded tilt > 15 & disp > 3)
+    - tilt <= 10 deg AND displacement <= 2 cm AND not ir_triggered -> LOW
+    - tilt > 10 deg OR displacement > 2 cm OR ir_triggered -> at least MEDIUM
+    - both tilt severely high AND (displacement > 2 or ir_triggered) -> HIGH
     """
     tilt_val = abs(float(tilt or 0.0))
     disp_val = abs(float(displacement or 0.0))
+    ir_active = bool(ir_triggered)
 
     severely_exceeded = (
         (tilt_val > 25.0 or disp_val > 5.0) or
-        (tilt_val > 15.0 and disp_val > 3.0) or
-        (tilt_val > 10.0 and disp_val > 2.0 and (tilt_val > 20.0 or disp_val > 4.0))
+        (tilt_val > 15.0 and (disp_val > 3.0 or ir_active)) or
+        (tilt_val > 10.0 and (disp_val > 2.0 or ir_active) and (tilt_val > 20.0 or disp_val > 4.0))
     )
 
     override_level = None
@@ -68,7 +68,7 @@ def apply_sensor_safety_override(current_risk: dict, tilt: float, displacement: 
         override_level = "HIGH"
         override_score = 5
         override_buzzer = "beep_continuous"
-    elif tilt_val > 10.0 or disp_val > 2.0:
+    elif tilt_val > 10.0 or disp_val > 2.0 or ir_active:
         # Minimum MEDIUM
         if current_risk["riskLevel"] != "HIGH":
             override_level = "MEDIUM"
@@ -89,10 +89,10 @@ def apply_sensor_safety_override(current_risk: dict, tilt: float, displacement: 
     }
 
 
-def compute_final_risk(model_risk_level: str, critical_probability: float, tilt: float, displacement: float) -> dict:
+def compute_final_risk(model_risk_level: str, critical_probability: float, tilt: float, displacement: float, ir_triggered: bool = False) -> dict:
     """
-    Combined computation: ML prediction mapped + safety override evaluated.
+    Combined computation: ML prediction mapped + safety override evaluated with Ultrasonic & IR Sensor.
     """
     base = map_ml_to_ui_risk(model_risk_level, critical_probability)
-    final = apply_sensor_safety_override(base, tilt, displacement)
+    final = apply_sensor_safety_override(base, tilt, displacement, ir_triggered=ir_triggered)
     return final
