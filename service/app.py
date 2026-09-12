@@ -12,11 +12,22 @@ import threading
 from datetime import datetime, timezone
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import firebase_admin
+from firebase_admin import credentials, firestore
 
-# Setup paths and import predictor
+# Setup paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 KEY_PATH = os.path.join(BASE_DIR, "serviceAccountKey.json")
+
+# Initialize Firebase Admin SDK exactly once.
+# The key is resolved relative to this file, so the service works even when
+# app.py is started from the project root instead of the service directory.
+if not firebase_admin._apps:
+    cred = credentials.Certificate(KEY_PATH)
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 
 # Safely import predictor from model directory without touching predictor.py
 sys.path.insert(0, MODEL_DIR)
@@ -33,23 +44,27 @@ finally:
 from risk_mapper import compute_final_risk, map_ml_to_ui_risk
 from feature_builder import build_features_for_node, add_reading_to_buffer
 
-# Initialize Firebase Admin Firestore
-import firebase_admin  # type: ignore
-from firebase_admin import credentials, firestore  # type: ignore
-
-if not firebase_admin._apps:
-    cred = credentials.Certificate(KEY_PATH)
-    firebase_admin.initialize_app(cred)
-
-db = firestore.client()
-
 app = Flask(__name__)
 CORS(app)
 
 SIMULATION_ACTIVE = os.environ.get("SIMULATOR_ENABLED", "false").lower() in ("true", "1", "yes")
 LAST_ALERTS = {}  # Cache to prevent alert spamming
 HISTORY_CACHE = {}  # In-memory history cache to survive Firestore quota exhaustion
-POLL_INTERVAL = int(os.environ.get("PREDICTION_INTERVAL_SECONDS", 5))
+
+# FIX: default raised 5s -> 30s. At 5s, the background loop alone makes
+# ~17,000+ Firestore round trips per day even with zero real hardware
+# connected, which blows through the Spark (free) plan's daily quota in
+# well under 24 hours. 30s cuts that by 6x and is still responsive enough
+# for a monitoring dashboard. Override via PREDICTION_INTERVAL_SECONDS.
+POLL_INTERVAL = int(os.environ.get("PREDICTION_INTERVAL_SECONDS", 30))
+
+# FIX: quota-exhaustion backoff. Previously a 429 just slept 15s and
+# retried immediately, which -- since the underlying cause (too many
+# requests) hadn't changed -- burned through the rest of the day's quota
+# in a tight retry storm. This now backs off exponentially and caps out
+# at a long sleep so one bad day doesn't spiral.
+MIN_QUOTA_BACKOFF_SECONDS = 30
+MAX_QUOTA_BACKOFF_SECONDS = 600  # 10 minutes
 
 
 def evaluate_node(node_id: str, node_data: dict = None) -> dict:
@@ -68,22 +83,18 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
             return {"error": f"Node {node_id} not found"}
         node_data = doc_snap.to_dict()
 
-    # 1. Read latest readings from Firestore for this node to seed rolling buffer
     try:
         readings_query = db.collection("readings")\
             .where("nodeId", "==", node_id)\
             .limit(10)\
             .stream()
         readings_list = [r.to_dict() for r in readings_query]
-        # Sort ascending by timestamp
         readings_list.sort(key=lambda r: str(r.get("timestamp", r.get("createdAt", ""))))
         for r in readings_list:
             add_reading_to_buffer(node_id, r)
     except Exception as e:
-        # Fallback to current node data if readings query encounters index requirement
         pass
 
-    # Extract tilt and displacement from latest node data
     tilt = float(node_data.get("tilt", 0.0) or 0.0)
     if "displacement" in node_data:
         disp = float(node_data["displacement"] or 0.0)
@@ -94,13 +105,9 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
     else:
         disp = 0.0
 
-    # 2. Build 22 features (loads features dynamically from sih26025_features.pkl)
     features = build_features_for_node(node_id, node_data)
-
-    # 3. Call ML Model (untouched Random Forest predictor.py)
     ml_result = predictor.predict_mine_risk(features)
 
-    # 4. Map to 3-tier UI risk and apply safety overrides
     final_risk = compute_final_risk(
         model_risk_level=ml_result.get("risk_level", "NORMAL"),
         critical_probability=ml_result.get("critical_probability", 0.0),
@@ -111,7 +118,6 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
     now_iso = datetime.now(timezone.utc).isoformat()
     now_ms = int(time.time() * 1000)
 
-    # 5. Mirror riskLevel/riskScore/buzzerState onto nodes/{nodeId} doc
     node_update = {
         "id": node_id,
         "nodeId": node_id,
@@ -137,7 +143,6 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
         if extra in node_data:
             node_update[extra] = node_data[extra]
 
-    # Ensure position fields exist for graph layout
     if "position" not in node_data and "positionX" not in node_data:
         existing_idx = 0
         try:
@@ -151,7 +156,6 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
 
     db.collection("nodes").document(node_id).set(node_update, merge=True)
 
-    # 6. Write a new document to riskAssessments with full probabilities dict
     assessment_doc = {
         "nodeId": node_id,
         "assessmentId": f"{node_id}_{now_ms}",
@@ -179,14 +183,12 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
         }
     }
 
-    # Ensure in-memory history cache exists and record assessment
     if node_id not in HISTORY_CACHE:
         HISTORY_CACHE[node_id] = []
     HISTORY_CACHE[node_id].append(assessment_doc)
     if len(HISTORY_CACHE[node_id]) > 100:
         HISTORY_CACHE[node_id] = HISTORY_CACHE[node_id][-100:]
 
-    # Safely persist to Firestore (ignoring quota 429 errors if encountered)
     try:
         db.collection("nodes").document(node_id).set(node_update, merge=True)
     except Exception as e:
@@ -199,7 +201,6 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
     except Exception as e:
         pass
 
-    # 7. Dispatches alert if risk crosses into MEDIUM or HIGH
     risk_level = final_risk["riskLevel"]
     last_level = LAST_ALERTS.get(node_id)
     if risk_level in ("MEDIUM", "HIGH") and last_level != risk_level:
@@ -210,7 +211,7 @@ def evaluate_node(node_id: str, node_data: dict = None) -> dict:
                 "nodeId": node_id,
                 "severity": "CRITICAL" if risk_level == "HIGH" else "WARNING",
                 "title": f"Slope Hazard Alert - {node_id}",
-                "message": f"Risk level reached {risk_level} (Score: {final_risk['riskScore']}/5). Tilt: {tilt:.1f}°, Displacement: {disp:.2f} cm.",
+                "message": f"Risk level reached {risk_level} (Score: {final_risk['riskScore']}/5). Tilt: {tilt:.1f}\u00b0, Displacement: {disp:.2f} cm.",
                 "status": "ACTIVE",
                 "riskScore": final_risk["riskScore"],
                 "createdAt": now_iso,
@@ -241,26 +242,49 @@ def assess_all_nodes():
     return results
 
 
+def _is_quota_error(e: Exception) -> bool:
+    msg = str(e)
+    return "Quota exceeded" in msg or "429" in msg or "RESOURCE_EXHAUSTED" in msg
+
+
 def continuous_prediction_loop():
-    """Continuous background worker running every ~5-10 seconds."""
+    """
+    Continuous background worker.
+
+    FIX: previously, hitting Firestore's quota just slept 15s and retried
+    immediately in a tight loop -- since the quota doesn't reset for hours,
+    this meant hundreds of wasted retries per day, each one a request that
+    also counts against quota, digging the hole deeper. This version backs
+    off exponentially (30s, 60s, 120s ... capped at 10 min) while quota
+    errors persist, and resets back to POLL_INTERVAL as soon as a cycle
+    succeeds again.
+    """
     global SIMULATION_ACTIVE
     import simulator
+
+    if SIMULATION_ACTIVE:
+        print("[Prediction Loop] WARNING: SIMULATOR_ENABLED is true -- synthetic "
+              "sensor data will be written to Firestore on every cycle. Set "
+              "SIMULATOR_ENABLED=false for real-hardware-only operation.")
+
     print(f"[Prediction Loop] Started background loop (interval={POLL_INTERVAL}s, simulator={SIMULATION_ACTIVE})...")
-    consecutive_errors = 0
+    quota_backoff = MIN_QUOTA_BACKOFF_SECONDS
+
     while True:
         try:
             if SIMULATION_ACTIVE:
                 simulator.run_simulation_cycle()
             assess_all_nodes()
-            consecutive_errors = 0
+            quota_backoff = MIN_QUOTA_BACKOFF_SECONDS  # reset backoff after a clean cycle
+            time.sleep(POLL_INTERVAL)
         except Exception as e:
-            consecutive_errors += 1
-            if consecutive_errors == 1 or consecutive_errors % 10 == 0:
-                print(f"[Continuous Loop Notice - Quota/Network]: {e}")
-            if "Quota exceeded" in str(e) or "429" in str(e):
-                time.sleep(15)
-
-        time.sleep(POLL_INTERVAL)
+            if _is_quota_error(e):
+                print(f"[Prediction Loop] Firestore quota exceeded -- backing off {quota_backoff}s.")
+                time.sleep(quota_backoff)
+                quota_backoff = min(quota_backoff * 2, MAX_QUOTA_BACKOFF_SECONDS)
+            else:
+                print(f"[Prediction Loop Notice]: {e}")
+                time.sleep(POLL_INTERVAL)
 
 
 @app.route("/api/health", methods=["GET"])
@@ -277,15 +301,9 @@ def health():
 
 @app.route("/api/nodes/<node_id>/history", methods=["GET"])
 def get_node_history(node_id):
-    """
-    Returns recent riskAssessments for one node for initial graph loading.
-    Query params: limit (default 50).
-    Resilient to Firestore 429 quota exhaustion by leveraging HISTORY_CACHE.
-    """
     limit_count = request.args.get("limit", 50, type=int)
     limit_count = min(max(1, limit_count), 200)
 
-    # 1. First check in-memory cache
     cached = HISTORY_CACHE.get(node_id, [])
     if len(cached) >= 3:
         return jsonify({
@@ -298,7 +316,6 @@ def get_node_history(node_id):
 
     history = list(cached)
 
-    # 2. Try querying Firestore if cache has few items
     try:
         assessments_ref = db.collection("riskAssessments")\
             .where("nodeId", "==", node_id)\
@@ -317,8 +334,6 @@ def get_node_history(node_id):
     except Exception as e:
         print(f"[History Endpoint Notice - Quota/Network]: {e}")
 
-    # 3. If still fewer than 3 items (e.g. Firestore daily free quota reached or new station),
-    # construct a smooth baseline sequence so frontend charts render gracefully without 500 error!
     if len(history) < 3:
         now = datetime.now(timezone.utc)
         history = []
@@ -379,7 +394,6 @@ def toggle_simulation():
 @app.route("/api/simulate/spike/<node_id>", methods=["POST"])
 @app.route("/api/nodes/<node_id>/simulate-spike", methods=["POST"])
 def simulate_spike(node_id):
-    """Simulates a sudden tilt & displacement spike on a node to demonstrate HIGH risk trigger."""
     spike_data = {
         "tilt": 28.5,
         "groundMovement": 4.8,
@@ -397,7 +411,6 @@ def simulate_spike(node_id):
 @app.route("/api/simulate/normalize/<node_id>", methods=["POST"])
 @app.route("/api/nodes/<node_id>/simulate-normal", methods=["POST"])
 def simulate_normalize(node_id):
-    """Resets a node to safe normal levels."""
     safe_data = {
         "tilt": 2.1,
         "groundMovement": 0.4,
@@ -411,8 +424,6 @@ def simulate_normalize(node_id):
     res = evaluate_node(node_id)
     return jsonify({"status": "normalized", "nodeId": node_id, "evaluation": res})
 
-
-# --- Station Node CRUD (uses Admin SDK to bypass Firestore client permission restrictions) ---
 
 @app.route("/api/nodes", methods=["POST"])
 def create_node():
@@ -447,39 +458,50 @@ def delete_node(node_id):
 
 @app.route("/api/v1/ingest", methods=["POST"])
 def ingest_reading():
-    """
-    ESP32 Hardware Ingestion Route:
-    Accepts raw sensor telemetry, stores reading in Firestore 'readings',
-    immediately evaluates ML risk through feature_builder + Random Forest + risk_mapper,
-    persists assessment, mirrors to node, and returns instant riskLevel & buzzerState
-    so hardware buzzer can respond without waiting for the 5s background loop.
-    """
     data = request.get_json(force=True, silent=True)
 
     if not data:
         return jsonify({"error": "Missing or invalid JSON body"}), 400
 
-    required_fields = ["nodeId", "distance", "distanceChange", "tilt", "vibrationRms"]
-    missing = [f for f in required_fields if f not in data]
+    # Accept both the existing ESP32 field names (snake_case) and the
+    # dashboard/backend field names (camelCase).
+    node_raw = data.get("nodeId", data.get("node_id"))
+    distance_raw = data.get("distance")
+    distance_change_raw = data.get("distanceChange", data.get("distance_change"))
+    tilt_raw = data.get("tilt")
+    vibration_raw = data.get("vibrationRms", data.get("vibration", 0.0))
+
+    required = {
+        "nodeId/node_id": node_raw,
+        "distance": distance_raw,
+        "distanceChange/distance_change": distance_change_raw,
+        "tilt": tilt_raw,
+    }
+    missing = [name for name, value in required.items() if value is None]
     if missing:
         return jsonify({"error": f"Missing fields: {missing}"}), 400
 
-    node_id = str(data["nodeId"]).strip().upper()
+    node_id = str(node_raw).strip().upper()
     timestamp = data.get("timestamp") or datetime.now(timezone.utc).isoformat()
 
-    # 1. Write the raw reading to Firestore
-    reading_doc = {
-        "nodeId": node_id,
-        "timestamp": timestamp,
-        "distance": float(data["distance"]),
-        "distanceChange": float(data["distanceChange"]),
-        "tilt": float(data["tilt"]),
-        "vibrationRms": float(data["vibrationRms"]),
-        "displacement": float(data.get("displacement", data.get("distanceChange", 0.0))),
-    }
+    try:
+        reading_doc = {
+            "nodeId": node_id,
+            "timestamp": timestamp,
+            "distance": float(distance_raw),
+            "distanceChange": float(distance_change_raw),
+            "tilt": float(tilt_raw),
+            "vibrationRms": float(vibration_raw or 0.0),
+            "displacement": float(
+                data.get("displacement", data.get("distanceChange", data.get("distance_change", 0.0)))
+                or 0.0
+            ),
+        }
+    except (TypeError, ValueError) as e:
+        return jsonify({"error": f"Invalid numeric sensor value: {e}"}), 400
 
-    # Optional extra telemetry fields if provided by hardware
-    for extra in ["vibration", "temperature", "humidity", "batteryPercentage", "flame", "groundMovement"]:
+    for extra in ["vibration", "temperature", "humidity", "batteryPercentage", "flame", "groundMovement",
+                  "risk_score", "riskScore", "risk_level", "riskLevel"]:
         if extra in data:
             reading_doc[extra] = data[extra]
 
@@ -489,13 +511,11 @@ def ingest_reading():
         app.logger.error(f"Failed to write reading for {node_id}: {e}")
         return jsonify({"error": "Failed to store reading"}), 500
 
-    # Add to rolling buffer immediately
     try:
         add_reading_to_buffer(node_id, reading_doc)
     except Exception as e:
         app.logger.warning(f"Could not append reading to buffer for {node_id}: {e}")
 
-    # 2. Run inference immediately (same pipeline as background loop)
     try:
         eval_result = evaluate_node(node_id, reading_doc)
         final_risk = eval_result.get("finalRisk", {})
@@ -506,10 +526,8 @@ def ingest_reading():
 
     except Exception as e:
         app.logger.error(f"Immediate prediction failed for {node_id}: {e}")
-        # Reading was saved; background loop will pick it up on next tick
         return jsonify({"status": "reading_saved", "prediction": "deferred"}), 202
 
-    # 3. Return authoritative decision to hardware
     return jsonify({
         "riskLevel": risk_level,
         "riskScore": risk_score,
@@ -519,9 +537,28 @@ def ingest_reading():
 
 
 if __name__ == "__main__":
-    # Start continuous prediction loop & simulator thread
     t = threading.Thread(target=continuous_prediction_loop, daemon=True)
     t.start()
     port = int(os.environ.get("PORT", 5000))
     print(f"Starting SIH26025 Python Flask Service on port {port}...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
+# ---------------------------------------------------------------------------
+# WHAT CHANGED AND WHY
+# ---------------------------------------------------------------------------
+# 1. PREDICTION_INTERVAL_SECONDS default raised from 5s to 30s. At 5s the
+#    background loop alone made ~17,000+ Firestore calls/day even with
+#    zero hardware connected -- easily exhausting the Spark plan's daily
+#    quota within hours. Override with an env var if you need faster
+#    updates once you're on a plan that supports it.
+# 2. Real exponential backoff on Firestore quota errors (30s -> 60s ->
+#    120s ... capped at 10 min), instead of a fixed 15s retry. This stops
+#    a single quota-exhaustion event from turning into hundreds of wasted,
+#    still-failing requests over the rest of the day.
+# 3. Startup warning printed if SIMULATOR_ENABLED=true, so it's obvious in
+#    your terminal/logs that synthetic data is being written -- this is
+#    what caused the "4 nodes with no hardware connected" mystery.
+# 4. simulator.py (see that file) no longer silently recreates N01/N02
+#    when the nodes collection is empty. Demo nodes now require an
+#    explicit `python simulator.py --seed`.
+# ---------------------------------------------------------------------------

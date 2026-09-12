@@ -2,6 +2,10 @@
 simulator.py - SIH26025 Synthetic Sensor Telemetry Generator
 Generates realistic time-series sensor data for monitoring stations
 when physical hardware units are offline or in demonstration mode.
+
+FIX (see notes at bottom): this version NEVER auto-creates nodes.
+It only ever ticks nodes that already exist in Firestore. If you
+want demo nodes, create them explicitly (see seed_demo_nodes()).
 """
 
 import os
@@ -50,27 +54,22 @@ def generate_station_tick(node_id: str, doc_data: dict = None) -> Dict[str, Any]
     now_iso = datetime.now(timezone.utc).isoformat()
     now_ts = int(time.time() * 1000)
 
-    # Check for occasional anomaly cycle on specific nodes
     state["anomaly_countdown"] -= 1
     is_anomaly = (state["anomaly_countdown"] <= 0) and (node_id in ("N01", "N02"))
 
     if is_anomaly:
-        # Generate temporary elevated slope hazard
         delta_tilt = random.uniform(0.8, 2.5)
         delta_disp = random.uniform(0.15, 0.45)
         vibration = round(random.uniform(0.4, 1.2), 3)
         if state["anomaly_countdown"] < -4:
-            # Reset after ~5 anomaly cycles
             state["anomaly_countdown"] = random.randint(25, 45)
     else:
-        # Normal subtle sensor walk
         delta_tilt = random.uniform(-0.15, 0.18)
         delta_disp = random.uniform(-0.02, 0.03)
         vibration = round(random.uniform(0.02, 0.08), 3)
 
     new_tilt = max(0.2, round(state["tilt"] + delta_tilt, 2))
     new_disp = max(0.05, round(state["displacement"] + delta_disp, 3))
-    # Distance inverse to ground movement
     new_dist = max(5.0, round(state["distance"] - (delta_disp * 1.2), 1))
 
     state["tilt"] = new_tilt
@@ -98,10 +97,8 @@ def generate_station_tick(node_id: str, doc_data: dict = None) -> Dict[str, Any]
         "flame": False
     }
 
-    # 1. Append time-series reading
     db.collection("readings").document(reading_id).set(reading_doc)
 
-    # 2. Update station latest state
     node_update = {
         "tilt": new_tilt,
         "groundMovement": new_disp,
@@ -122,25 +119,52 @@ def generate_station_tick(node_id: str, doc_data: dict = None) -> Dict[str, Any]
 
 
 def run_simulation_cycle():
-    """Runs a single simulation tick across all active stations in Firestore."""
+    """
+    Runs a single simulation tick across all EXISTING active stations in Firestore.
+
+    FIX: previously this auto-created N01/N02 out of thin air whenever the
+    'nodes' collection was empty. That silently reintroduced phantom demo
+    nodes any time the real collection got cleared. It now does nothing if
+    there are no nodes -- ticking only ever happens for nodes that already
+    exist (created deliberately via seed_demo_nodes(), the API, or real
+    hardware posting to /api/v1/ingest).
+    """
     try:
         nodes_ref = db.collection("nodes").stream()
         active_nodes = list(nodes_ref)
         if not active_nodes:
-            # Seed default N01 and N02 if collection is empty
-            for default_id in ["N01", "N02"]:
-                generate_station_tick(default_id)
-        else:
-            for doc in active_nodes:
-                generate_station_tick(doc.id, doc.to_dict())
+            print("[Simulator] No nodes exist yet -- nothing to simulate. "
+                  "Call seed_demo_nodes() explicitly if you want demo data.")
+            return
+        for doc in active_nodes:
+            generate_station_tick(doc.id, doc.to_dict())
     except Exception as e:
         print(f"[Simulator Error]: {e}")
 
 
+def seed_demo_nodes(node_ids=None):
+    """
+    Explicitly create demo nodes for local testing / presentations.
+
+    This is now the ONLY way demo nodes get created -- it must be called
+    on purpose (e.g. `python simulator.py --seed`), never automatically.
+    """
+    node_ids = node_ids or ["N01", "N02"]
+    for node_id in node_ids:
+        generate_station_tick(node_id)
+    print(f"[Simulator] Seeded demo nodes: {node_ids}")
+
+
 def start_standalone():
     """Runs continuous simulator loop when run directly from command line."""
-    interval = int(os.environ.get("SIMULATOR_INTERVAL_SECONDS", 5))
-    print(f"Starting SIH26025 Standalone Sensor Simulator (interval={interval}s)... Press Ctrl+C to stop.")
+    import sys
+    if "--seed" in sys.argv:
+        seed_demo_nodes()
+        return
+
+    interval = int(os.environ.get("SIMULATOR_INTERVAL_SECONDS", 30))
+    print(f"Starting SIH26025 Standalone Sensor Simulator (interval={interval}s)... "
+          f"Press Ctrl+C to stop. (Run with --seed to create demo nodes first.)")
     while True:
         run_simulation_cycle()
         time.sleep(interval)
@@ -148,3 +172,18 @@ def start_standalone():
 
 if __name__ == "__main__":
     start_standalone()
+
+# ---------------------------------------------------------------------------
+# WHAT CHANGED AND WHY
+# ---------------------------------------------------------------------------
+# 1. run_simulation_cycle() no longer auto-creates N01/N02 when the nodes
+#    collection is empty. This was the source of the "4 phantom nodes"
+#    mystery -- an empty collection would silently regenerate demo nodes
+#    on the very next simulation tick, making it look like they never
+#    got deleted.
+# 2. Added seed_demo_nodes() as an explicit, opt-in way to create demo
+#    nodes when you actually want them (e.g. before a presentation).
+#    Run `python simulator.py --seed` to use it.
+# 3. Default SIMULATOR_INTERVAL_SECONDS raised from 5s to 30s to reduce
+#    Firestore read/write volume when running standalone.
+# ---------------------------------------------------------------------------

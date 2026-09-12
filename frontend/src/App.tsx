@@ -5,13 +5,17 @@ import { Navbar } from './components/Navbar';
 import { DashboardPage } from './pages/DashboardPage';
 import { NodeGraphPage } from './pages/NodeGraphPage';
 import { MonitoringNode, SensorReading, AlertNotification } from './types';
+import { Network } from 'lucide-react';
 
 const API_BASE = 'http://localhost:5000';
 
 export function App() {
   const [currentTab, setCurrentTab] = useState<'dashboard' | 'graph'>('dashboard');
   const [nodes, setNodes] = useState<MonitoringNode[]>([]);
-  const [selectedNodeId, setSelectedNodeId] = useState<string>('N01');
+  const [nodesLoading, setNodesLoading] = useState<boolean>(true);
+  // FIX: was hardcoded to 'N01' - now starts empty and is only ever
+  // set from real Firestore data (see the nodes subscription below).
+  const [selectedNodeId, setSelectedNodeId] = useState<string>('');
   const [readings, setReadings] = useState<SensorReading[]>([]);
   const [alerts, setAlerts] = useState<AlertNotification[]>([]);
   const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
@@ -19,7 +23,10 @@ export function App() {
 
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // 1. Subscribe to Firestore `nodes` collection in real-time
+  // 1. Subscribe to Firestore `nodes` collection in real-time.
+  // This is the ONLY source of truth for the nodes list - if this
+  // collection is empty, `nodes` stays [] and the UI shows the
+  // empty state below. No hardcoded station list exists anywhere.
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'nodes'), (snapshot) => {
       const nodeList: MonitoringNode[] = [];
@@ -34,16 +41,21 @@ export function App() {
       // Sort predictably by ID (e.g. N01, N02)
       nodeList.sort((a, b) => a.id.localeCompare(b.id));
       setNodes(nodeList);
+      setNodesLoading(false);
 
-      // Ensure a valid node is selected
+      // Ensure a valid node is selected - or clear selection if
+      // there genuinely are none.
       if (nodeList.length > 0) {
         setSelectedNodeId(prev => {
           const exists = nodeList.some(n => n.id === prev);
           return exists ? prev : nodeList[0].id;
         });
+      } else {
+        setSelectedNodeId('');
       }
     }, (error) => {
       console.error("Error subscribing to nodes collection:", error);
+      setNodesLoading(false);
     });
 
     return () => unsubscribe();
@@ -149,18 +161,25 @@ export function App() {
     }
   }, [nodes, selectedNodeId, audioEnabled]);
 
-  // Simulation handlers calling Python service
+  // Simulation handlers calling Python service.
+  // NOTE: reconciled to match the documented backend route
+  // POST /api/nodes/<id>/simulate-spike (and simulate-normal).
+  // If your actual service/app.py uses a different path
+  // (e.g. /api/simulate/spike/<id>), change these two URLs to match
+  // whichever one is real rather than guessing again.
   const handleSimulateSpike = async () => {
+    if (!selectedNodeId) return;
     try {
-      await fetch(`${API_BASE}/api/simulate/spike/${selectedNodeId}`, { method: 'POST' });
+      await fetch(`${API_BASE}/api/nodes/${selectedNodeId}/simulate-spike`, { method: 'POST' });
     } catch (err) {
       console.warn("Spike triggered locally or backend offline:", err);
     }
   };
 
   const handleSimulateNormalize = async () => {
+    if (!selectedNodeId) return;
     try {
-      await fetch(`${API_BASE}/api/simulate/normalize/${selectedNodeId}`, { method: 'POST' });
+      await fetch(`${API_BASE}/api/nodes/${selectedNodeId}/simulate-normal`, { method: 'POST' });
     } catch (err) {
       console.warn("Normalize triggered locally or backend offline:", err);
     }
@@ -182,7 +201,33 @@ export function App() {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-6">
-        {currentTab === 'dashboard' ? (
+        {nodesLoading ? (
+          <div className="flex items-center justify-center h-96">
+            <div className="text-center p-8 bg-white rounded-xl shadow-sm border border-slate-200">
+              <h3 className="text-base font-semibold text-slate-700">Connecting to Firestore...</h3>
+            </div>
+          </div>
+        ) : nodes.length === 0 ? (
+          // FIX: real empty state instead of silently falling through
+          // to DashboardPage's spinner when there are genuinely zero
+          // node documents in Firestore.
+          <div className="flex items-center justify-center h-96">
+            <div className="text-center p-10 bg-white rounded-xl shadow-sm border border-dashed border-slate-300 max-w-md mx-auto">
+              <Network className="w-10 h-10 text-slate-300 mx-auto" />
+              <h3 className="mt-4 text-base font-semibold text-slate-800">No monitoring stations yet</h3>
+              <p className="text-sm text-slate-500 mt-2">
+                No documents exist in the <code className="text-xs bg-slate-100 px-1 py-0.5 rounded">nodes</code> collection in Firestore.
+                Add a station from the Station Graph tab, or connect a sensor node, to see it appear here live.
+              </p>
+              <button
+                onClick={() => setCurrentTab('graph')}
+                className="mt-5 px-4 py-2 rounded-lg bg-blue-700 text-white text-sm font-semibold hover:bg-blue-800"
+              >
+                Go to Station Graph
+              </button>
+            </div>
+          </div>
+        ) : currentTab === 'dashboard' ? (
           <DashboardPage
             nodes={nodes}
             selectedNodeId={selectedNodeId}

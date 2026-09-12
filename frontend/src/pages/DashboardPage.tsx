@@ -1,34 +1,34 @@
 import { useMemo, useState, useEffect } from 'react';
-import { 
-  Ruler, 
-  Activity, 
-  Compass, 
-  ShieldAlert, 
-  ShieldCheck, 
-  AlertTriangle, 
-  Radio, 
-  Battery, 
-  Thermometer, 
-  Droplets, 
-  Flame, 
-  Clock, 
+import {
+  Ruler,
+  Activity,
+  Compass,
+  ShieldAlert,
+  ShieldCheck,
+  AlertTriangle,
+  Radio,
+  Battery,
+  Thermometer,
+  Droplets,
+  Flame,
+  Clock,
   TrendingUp,
   Volume2,
   BrainCircuit,
   Layers
 } from 'lucide-react';
-import { 
-  ResponsiveContainer, 
-  LineChart, 
-  Line, 
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
   AreaChart,
   Area,
-  XAxis, 
-  YAxis, 
-  Tooltip, 
-  CartesianGrid, 
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
   ReferenceLine,
-  Legend 
+  Legend
 } from 'recharts';
 
 // Safe wrapper to resolve Recharts class component JSX typing conflict in React 18/19
@@ -47,6 +47,18 @@ interface DashboardPageProps {
   audioEnabled: boolean;
   onSimulateSpike: () => void;
   onSimulateNormalize: () => void;
+}
+
+// A node is considered ONLINE if it has reported within roughly
+// 4x the expected send interval (5s loop -> 20s window). Adjust
+// ONLINE_THRESHOLD_MS if your hardware/simulator interval changes.
+const ONLINE_THRESHOLD_MS = 20000;
+
+function isNodeOnline(lastSeen: string | number | undefined): boolean {
+  if (!lastSeen) return false;
+  const lastSeenTime = new Date(lastSeen).getTime();
+  if (Number.isNaN(lastSeenTime)) return false;
+  return Date.now() - lastSeenTime < ONLINE_THRESHOLD_MS;
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
@@ -136,9 +148,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             if (item.timestamp && (item.probabilities || item.riskScore !== undefined || item.risk_score !== undefined)) {
               setHistoryAssessments(prev => {
                 const docId = change.doc.id;
-                const existingIdx = prev.findIndex(p => 
-                  p.id === docId || 
-                  p.assessmentId === item.assessmentId || 
+                const existingIdx = prev.findIndex(p =>
+                  p.id === docId ||
+                  p.assessmentId === item.assessmentId ||
                   p.timestamp === item.timestamp
                 );
                 let updated;
@@ -171,11 +183,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       try {
         const d = new Date(a.timestamp);
         timeLabel = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      } catch {}
+      } catch { }
 
       const score = Number(a.risk_score ?? a.riskScore ?? 0);
       const probs = a.probabilities || a.mlPrediction?.probabilities || {};
-      
+
       const normal = Math.round((Number(probs.NORMAL ?? 0)) * 100);
       const warning = Math.round((Number(probs.WARNING ?? 0)) * 100);
       const highRisk = Math.round((Number(probs.HIGH_RISK ?? 0)) * 100);
@@ -218,9 +230,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const distVal = Number(node.distance || 0);
   const distChange = Number(node.distanceChange || 0);
 
+  // Real online/synced status, derived from lastSeen instead of hardcoded
+  const nodeOnline = isNodeOnline(node.lastSeen);
+
   return (
     <div className="space-y-6 pb-12">
-      
+
       {/* Station Selector Pill Bar & Status Header */}
       <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -233,15 +248,20 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 {node.name}
               </span>
             )}
-            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5 animate-pulse"></span>
-              ONLINE
+            {/* FIX: was hardcoded to always show ONLINE - now derived from node.lastSeen */}
+            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${nodeOnline
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-slate-100 text-slate-500 border-slate-200'
+              }`}>
+              <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${nodeOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
+                }`}></span>
+              {nodeOnline ? 'ONLINE' : 'OFFLINE'}
             </span>
           </div>
           <div className="flex items-center space-x-4 text-xs text-slate-500 mt-1">
             <span className="flex items-center">
               <Clock className="w-3.5 h-3.5 mr-1 text-slate-400" />
-              Last reading: {node.lastSeen ? new Date(node.lastSeen).toLocaleTimeString() : 'Live'}
+              Last reading: {node.lastSeen ? new Date(node.lastSeen).toLocaleTimeString() : 'No data yet'}
             </span>
             <span>•</span>
             <span>Firmware: SIH26025 v2.4</span>
@@ -258,17 +278,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               <button
                 key={n.id}
                 onClick={() => onSelectNode(n.id)}
-                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                  isSelected
+                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${isSelected
                     ? 'bg-blue-700 text-white shadow-sm'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                }`}
+                  }`}
               >
                 <span>{n.id}</span>
                 <span
-                  className={`w-2 h-2 rounded-full ${
-                    rLevel === 'HIGH' ? 'bg-red-500' : rLevel === 'MEDIUM' ? 'bg-amber-500' : 'bg-emerald-500'
-                  }`}
+                  className={`w-2 h-2 rounded-full ${rLevel === 'HIGH' ? 'bg-red-500' : rLevel === 'MEDIUM' ? 'bg-amber-500' : 'bg-emerald-500'
+                    }`}
                 />
               </button>
             );
@@ -304,9 +322,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
           <div className="flex items-center justify-between text-slate-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Displacement</span>
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-              dispVal > 2.0 ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'
-            }`}>
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${dispVal > 2.0 ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'
+              }`}>
               <Activity className="w-4 h-4" />
             </div>
           </div>
@@ -327,9 +344,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
           <div className="flex items-center justify-between text-slate-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Tilt (Angle)</span>
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-              tiltVal > 10.0 ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'
-            }`}>
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${tiltVal > 10.0 ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'
+              }`}>
               <Compass className="w-4 h-4" />
             </div>
           </div>
@@ -347,13 +363,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         </div>
 
         {/* 4. Risk Level & Score */}
-        <div className={`rounded-xl p-5 border shadow-sm flex flex-col justify-between ${
-          riskLevel === 'HIGH'
+        <div className={`rounded-xl p-5 border shadow-sm flex flex-col justify-between ${riskLevel === 'HIGH'
             ? 'bg-red-50/50 border-red-200'
             : riskLevel === 'MEDIUM'
-            ? 'bg-amber-50/50 border-amber-200'
-            : 'bg-emerald-50/40 border-emerald-200'
-        }`}>
+              ? 'bg-amber-50/50 border-amber-200'
+              : 'bg-emerald-50/40 border-emerald-200'
+          }`}>
           <div className="flex items-center justify-between text-slate-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Risk Level</span>
             <div className="w-8 h-8 rounded-lg flex items-center justify-center">
@@ -364,9 +379,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
           <div className="mt-3">
             <div className="flex items-baseline space-x-2">
-              <span className={`text-2xl font-black ${
-                riskLevel === 'HIGH' ? 'text-red-700' : riskLevel === 'MEDIUM' ? 'text-amber-700' : 'text-emerald-700'
-              }`}>
+              <span className={`text-2xl font-black ${riskLevel === 'HIGH' ? 'text-red-700' : riskLevel === 'MEDIUM' ? 'text-amber-700' : 'text-emerald-700'
+                }`}>
                 {riskLevel}
               </span>
               <span className="text-xs font-bold text-slate-600">
@@ -375,9 +389,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </div>
             <div className="w-full bg-slate-200 rounded-full h-1.5 mt-2 overflow-hidden">
               <div
-                className={`h-full transition-all duration-300 ${
-                  riskLevel === 'HIGH' ? 'bg-red-600' : riskLevel === 'MEDIUM' ? 'bg-amber-500' : 'bg-emerald-500'
-                }`}
+                className={`h-full transition-all duration-300 ${riskLevel === 'HIGH' ? 'bg-red-600' : riskLevel === 'MEDIUM' ? 'bg-amber-500' : 'bg-emerald-500'
+                  }`}
                 style={{ width: `${(riskScore / 5) * 100}%` }}
               />
             </div>
@@ -411,9 +424,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 </>
               )}
             </div>
+            {/* FIX: was hardcoded to always show "Active" - now reflects real online status */}
             <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100 text-xs text-slate-500">
               <span>Hardware Synced:</span>
-              <span className="font-medium text-slate-700">Active</span>
+              <span className={`font-medium ${nodeOnline ? 'text-emerald-600' : 'text-slate-400'}`}>
+                {nodeOnline ? 'Active' : 'Stale'}
+              </span>
             </div>
           </div>
         </div>
@@ -454,7 +470,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   }}
                 />
                 <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '8px' }} />
-                
+
                 {/* Safe Limit Thresholds */}
                 <SafeReferenceLine yAxisId="left" y={2.0} stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'Disp 2cm Limit', fill: '#ef4444', fontSize: 10 }} />
                 <SafeReferenceLine yAxisId="right" y={10.0} stroke="#f97316" strokeDasharray="4 4" label={{ value: 'Tilt 10° Limit', fill: '#f97316', fontSize: 10 }} />
@@ -626,13 +642,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     Bands: LOW (0–1) • MEDIUM (2–4) • HIGH (5)
                   </span>
                 </div>
-                <span className={`text-xs font-bold px-2 py-0.5 rounded border ${
-                  node.riskLevel === 'HIGH'
+                <span className={`text-xs font-bold px-2 py-0.5 rounded border ${node.riskLevel === 'HIGH'
                     ? 'bg-red-50 text-red-700 border-red-200'
                     : node.riskLevel === 'MEDIUM'
-                    ? 'bg-amber-50 text-amber-700 border-amber-200'
-                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                }`}>
+                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  }`}>
                   Current: {node.riskScore ?? (node.riskLevel === 'HIGH' ? 5 : node.riskLevel === 'MEDIUM' ? 3 : 0)}/5
                 </span>
               </div>
@@ -774,11 +789,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       <span className="text-xs font-bold text-slate-900">
                         {alert.title || `Alert: ${alert.nodeId}`}
                       </span>
-                      <span className={`text-[10px] font-bold px-2 py-0.2 rounded border ${
-                        alert.severity === 'CRITICAL' || alert.severity === 'HIGH'
+                      <span className={`text-[10px] font-bold px-2 py-0.2 rounded border ${alert.severity === 'CRITICAL' || alert.severity === 'HIGH'
                           ? 'bg-red-50 text-red-700 border-red-200'
                           : 'bg-amber-50 text-amber-700 border-amber-200'
-                      }`}>
+                        }`}>
                         {alert.severity || 'WARNING'}
                       </span>
                     </div>
