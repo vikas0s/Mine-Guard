@@ -12,7 +12,6 @@ import ReactFlow, {
   EdgeChange,
   useReactFlow,
   ConnectionLineType,
-  MarkerType,
   ReactFlowProvider
 } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -21,19 +20,16 @@ import {
   Plus,
   LayoutGrid,
   Trash2,
-  Edit2,
   X,
   Link2,
   Unlink,
-  Layers,
-  Sparkles,
   GitBranch,
-  CornerDownRight,
-  Info
+  ChevronDown
 } from 'lucide-react';
 import { doc, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { StationNode, StationNodeData } from '../components/StationNode';
+import { TunnelEdge, TunnelEdgeData } from '../components/TunnelEdge';
 import { MonitoringNode } from '../types';
 
 interface NodeGraphPageProps {
@@ -44,6 +40,10 @@ interface NodeGraphPageProps {
 
 const nodeTypes = {
   stationNode: StationNode,
+};
+
+const edgeTypes = {
+  tunnelEdge: TunnelEdge,
 };
 
 // Dagre layout helper
@@ -82,15 +82,12 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
   onSelectNode
 }) => {
   const [nodes, setNodes] = useState<Node<StationNodeData>[]>([]);
-  const [edges, setEdges] = useState<Edge[]>([]);
-  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-
-  // Tunnel Styling & Mode
-  const [tunnelStyle, setTunnelStyle] = useState<'smoothstep' | 'straight' | 'default'>('smoothstep');
+  const [edges, setEdges] = useState<Edge<TunnelEdgeData>[]>([]);
 
   // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
+  const [isTunnelManagerOpen, setIsTunnelManagerOpen] = useState(false);
+  const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingNode, setEditingNode] = useState<MonitoringNode | null>(null);
 
@@ -109,7 +106,16 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
   const API_BASE = 'http://localhost:5000';
   const hasLoadedEdgesRef = useRef(false);
 
-  // Resilient CRUD helpers: Use Admin SDK via Python backend as primary
+  // Disconnect a specific tunnel (called from edge [x] button or modal)
+  const handleDisconnectTunnel = useCallback((edgeId: string) => {
+    setEdges(prev => {
+      const updated = prev.filter(e => e.id !== edgeId);
+      persistEdges(updated);
+      return updated;
+    });
+  }, []);
+
+  // Resilient CRUD helpers
   const resilientSetDoc = async (nodeId: string, data: any) => {
     try {
       const res = await fetch(`${API_BASE}/api/nodes`, {
@@ -148,7 +154,7 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
   };
 
   // Edge persistence helper (Firestore + LocalStorage cache)
-  const persistEdges = useCallback(async (updatedEdges: Edge[]) => {
+  const persistEdges = useCallback(async (updatedEdges: Edge<TunnelEdgeData>[]) => {
     try {
       localStorage.setItem('mineguard_cave_tunnels', JSON.stringify(updatedEdges));
       await fetch(`${API_BASE}/api/network/edges`, {
@@ -161,10 +167,36 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
     }
   }, []);
 
+  // Helper to format an edge with the custom interactive TunnelEdge
+  const createTunnelEdge = useCallback((
+    source: string,
+    target: string,
+    label?: string,
+    sourceHandle?: string,
+    targetHandle?: string
+  ): Edge<TunnelEdgeData> => {
+    const id = `tunnel-${source}-${target}-${Date.now()}`;
+    return {
+      id,
+      source,
+      target,
+      sourceHandle,
+      targetHandle,
+      type: 'tunnelEdge',
+      animated: true,
+      style: { stroke: '#475569', strokeWidth: 2, strokeDasharray: '5,5' },
+      label: label || `Gallery ${source}↔${target}`,
+      data: {
+        label: label || `Gallery ${source}↔${target}`,
+        onDisconnect: handleDisconnectTunnel
+      }
+    };
+  }, [handleDisconnectTunnel]);
+
   // Initial load of custom edges from Backend / Firestore / LocalStorage
   useEffect(() => {
     const loadSavedEdges = async () => {
-      let saved: Edge[] = [];
+      let saved: Edge<TunnelEdgeData>[] = [];
       try {
         const res = await fetch(`${API_BASE}/api/network/edges`);
         if (res.ok) {
@@ -191,21 +223,24 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
       // If still no edges, seed a default initial chain between available nodes
       if (saved.length === 0 && firestoreNodes.length > 1) {
         for (let i = 0; i < firestoreNodes.length - 1; i++) {
-          saved.push({
-            id: `tunnel-${firestoreNodes[i].id}-${firestoreNodes[i + 1].id}`,
-            source: firestoreNodes[i].id,
-            target: firestoreNodes[i + 1].id,
-            sourceHandle: 'bottom-out',
-            targetHandle: 'top-in',
-            animated: true,
-            type: 'smoothstep',
-            style: { stroke: '#475569', strokeWidth: 2, strokeDasharray: '5,5' },
-            label: `Gallery ${firestoreNodes[i].id}↔${firestoreNodes[i + 1].id}`,
-            labelStyle: { fill: '#475569', fontWeight: 600, fontSize: 10 },
-            labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95, rx: 4, ry: 4 },
-            labelBgPadding: [6, 2],
-          });
+          saved.push(createTunnelEdge(
+            firestoreNodes[i].id,
+            firestoreNodes[i + 1].id,
+            `Gallery ${firestoreNodes[i].id}↔${firestoreNodes[i + 1].id}`,
+            'bottom-out',
+            'top-in'
+          ));
         }
+      } else {
+        // Attach onDisconnect handler to saved edges
+        saved = saved.map(e => ({
+          ...e,
+          type: 'tunnelEdge',
+          data: {
+            ...e.data,
+            onDisconnect: handleDisconnectTunnel
+          }
+        }));
       }
 
       setEdges(saved);
@@ -215,14 +250,13 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
     if (!hasLoadedEdgesRef.current) {
       loadSavedEdges();
     }
-  }, [firestoreNodes]);
+  }, [firestoreNodes, createTunnelEdge, handleDisconnectTunnel]);
 
   // Delete node handler
   const handleDeleteNode = useCallback(async (nodeId: string) => {
     if (window.confirm(`Are you sure you want to delete Station ${nodeId}? This removes it from the cave map and Firestore.`)) {
       try {
         await resilientDeleteDoc(nodeId);
-        // Also clean up any edges attached to this node
         setEdges(prev => {
           const filtered = prev.filter(e => e.source !== nodeId && e.target !== nodeId);
           persistEdges(filtered);
@@ -242,6 +276,17 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
     setIsEditModalOpen(true);
   }, []);
 
+  // Quick connect trigger from a station node card
+  const handleConnectFromNode = useCallback((sourceNodeId: string) => {
+    setConnectSource(sourceNodeId);
+    const otherNode = firestoreNodes.find(n => n.id !== sourceNodeId);
+    if (otherNode) {
+      setConnectTarget(otherNode.id);
+      setConnectTunnelName(`Gallery ${sourceNodeId}↔${otherNode.id}`);
+    }
+    setIsTunnelManagerOpen(true);
+  }, [firestoreNodes]);
+
   // Map Firestore nodes to React Flow nodes WITHOUT wiping custom edges
   useEffect(() => {
     if (!firestoreNodes) return;
@@ -259,7 +304,8 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
           isSelected: fn.id === selectedNodeId,
           onDelete: handleDeleteNode,
           onEdit: handleEditNode,
-          onSelect: onSelectNode
+          onSelect: onSelectNode,
+          onConnectFrom: handleConnectFromNode
         },
       };
     });
@@ -277,7 +323,7 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
         return validEdges;
       });
     }
-  }, [firestoreNodes, selectedNodeId, handleDeleteNode, handleEditNode, onSelectNode, persistEdges]);
+  }, [firestoreNodes, selectedNodeId, handleDeleteNode, handleEditNode, onSelectNode, handleConnectFromNode, persistEdges]);
 
   // Handle manual dragging: Update Firestore document when drag stops
   const onNodeDragStop = useCallback(async (_: React.MouseEvent, node: Node) => {
@@ -299,59 +345,36 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
-      setEdges((eds) => {
-        const next = applyEdgeChanges(changes, eds);
-        return next;
-      });
+      setEdges((eds) => applyEdgeChanges(changes, eds));
     },
     []
   );
 
-  // INTERACTIVE DRAG-AND-CONNECT: Connect ANY node to ANY node / multiple nodes
+  // INTERACTIVE DRAG-AND-CONNECT
   const onConnect = useCallback((connection: Connection) => {
     if (!connection.source || !connection.target || connection.source === connection.target) return;
 
     setEdges((eds) => {
-      // Avoid exact duplicate connection
+      // Avoid duplicate connection
       const alreadyExists = eds.some(
         e => (e.source === connection.source && e.target === connection.target) ||
              (e.source === connection.target && e.target === connection.source)
       );
       if (alreadyExists) return eds;
 
-      const newEdge: Edge = {
-        ...connection,
-        id: `tunnel-${connection.source}-${connection.target}-${Date.now()}`,
-        animated: true,
-        type: tunnelStyle,
-        style: { stroke: '#475569', strokeWidth: 2, strokeDasharray: '5,5' },
-        label: `Tunnel ${connection.source}↔${connection.target}`,
-        labelStyle: { fill: '#475569', fontWeight: 600, fontSize: 10 },
-        labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95, rx: 4, ry: 4 },
-        labelBgPadding: [6, 2],
-      };
+      const newEdge = createTunnelEdge(
+        connection.source,
+        connection.target,
+        `Tunnel ${connection.source}↔${connection.target}`,
+        connection.sourceHandle || undefined,
+        connection.targetHandle || undefined
+      );
 
       const updated = addEdge(newEdge, eds);
       persistEdges(updated);
       return updated;
     });
-  }, [tunnelStyle, persistEdges]);
-
-  // Select edge on click
-  const onEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
-    setSelectedEdgeId(prev => prev === edge.id ? null : edge.id);
-  }, []);
-
-  // Delete selected edge
-  const handleDeleteSelectedEdge = useCallback(() => {
-    if (!selectedEdgeId) return;
-    setEdges(eds => {
-      const updated = eds.filter(e => e.id !== selectedEdgeId);
-      persistEdges(updated);
-      return updated;
-    });
-    setSelectedEdgeId(null);
-  }, [selectedEdgeId, persistEdges]);
+  }, [createTunnelEdge, persistEdges]);
 
   // Apply Dagre auto-layout
   const handleAutoLayout = useCallback(async () => {
@@ -377,69 +400,58 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
     }, 50);
   }, [nodes, edges, reactFlowInstance]);
 
-  // Cave Preset 1: Branching Gallery (Main Adit to Sub-tunnels)
+  // Cave Preset: Branching Cave
   const applyBranchingCaveLayout = useCallback(async () => {
     if (firestoreNodes.length === 0) return;
     const root = firestoreNodes[0];
-    const newEdges: Edge[] = [];
+    const newEdges: Edge<TunnelEdgeData>[] = [];
 
-    // Arrange nodes in branching tree
     const updatedNodes = firestoreNodes.map((fn, idx) => {
-      if (idx === 0) {
-        return { ...fn, position: { x: 300, y: 80 } };
-      }
+      if (idx === 0) return { ...fn, position: { x: 300, y: 80 } };
       const side = idx % 2 === 1 ? -1 : 1;
       const row = Math.ceil(idx / 2);
       return {
         ...fn,
         position: {
-          x: 300 + side * (180 + (row - 1) * 60),
-          y: 80 + row * 170
+          x: 300 + side * (190 + (row - 1) * 60),
+          y: 80 + row * 180
         }
       };
     });
 
-    // Connect root to all first-level branches, and subsequent nodes to previous
     for (let i = 1; i < firestoreNodes.length; i++) {
       const parent = i <= 2 ? root : firestoreNodes[Math.floor((i - 1) / 2)];
-      newEdges.push({
-        id: `tunnel-${parent.id}-${firestoreNodes[i].id}-${Date.now()}`,
-        source: parent.id,
-        target: firestoreNodes[i].id,
-        sourceHandle: 'bottom-out',
-        targetHandle: 'top-in',
-        animated: true,
-        type: tunnelStyle,
-        style: { stroke: '#3b82f6', strokeWidth: 2, strokeDasharray: '5,5' },
-        label: `Gallery ${parent.id}→${firestoreNodes[i].id}`,
-        labelStyle: { fill: '#1e40af', fontWeight: 600, fontSize: 10 },
-        labelBgStyle: { fill: '#eff6ff', fillOpacity: 0.95, rx: 4, ry: 4 },
-        labelBgPadding: [6, 2],
-      });
+      newEdges.push(createTunnelEdge(
+        parent.id,
+        firestoreNodes[i].id,
+        `Gallery ${parent.id}→${firestoreNodes[i].id}`,
+        'bottom-out',
+        'top-in'
+      ));
     }
 
     setEdges(newEdges);
     persistEdges(newEdges);
 
-    // Save node positions
     for (const un of updatedNodes) {
       if (un.position) {
         resilientUpdateDoc(un.id, { position: un.position, positionX: un.position.x, positionY: un.position.y });
       }
     }
 
+    setIsTemplatesOpen(false);
     setTimeout(() => reactFlowInstance.fitView({ padding: 0.2 }), 60);
-  }, [firestoreNodes, tunnelStyle, persistEdges, reactFlowInstance]);
+  }, [firestoreNodes, createTunnelEdge, persistEdges, reactFlowInstance]);
 
-  // Cave Preset 2: Perimeter Ring / Loop Tunnel (Continuous ventilation circuit)
+  // Cave Preset: Perimeter Loop Ring
   const applyRingTunnelLayout = useCallback(async () => {
     if (firestoreNodes.length < 2) return;
     const count = firestoreNodes.length;
-    const radius = Math.max(200, count * 60);
+    const radius = Math.max(200, count * 65);
     const centerX = 350;
     const centerY = 260;
 
-    const newEdges: Edge[] = [];
+    const newEdges: Edge<TunnelEdgeData>[] = [];
     const updatedNodes = firestoreNodes.map((fn, idx) => {
       const angle = (idx / count) * 2 * Math.PI - Math.PI / 2;
       const x = Math.round(centerX + radius * Math.cos(angle));
@@ -447,22 +459,10 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
       return { ...fn, position: { x, y } };
     });
 
-    // Form circular loop
     for (let i = 0; i < count; i++) {
       const src = firestoreNodes[i];
       const tgt = firestoreNodes[(i + 1) % count];
-      newEdges.push({
-        id: `tunnel-loop-${src.id}-${tgt.id}-${Date.now()}`,
-        source: src.id,
-        target: tgt.id,
-        animated: true,
-        type: 'smoothstep',
-        style: { stroke: '#059669', strokeWidth: 2, strokeDasharray: '4,4' },
-        label: `Ring ${src.id}↔${tgt.id}`,
-        labelStyle: { fill: '#065f46', fontWeight: 600, fontSize: 10 },
-        labelBgStyle: { fill: '#ecfdf5', fillOpacity: 0.95, rx: 4, ry: 4 },
-        labelBgPadding: [6, 2],
-      });
+      newEdges.push(createTunnelEdge(src.id, tgt.id, `Ring ${src.id}↔${tgt.id}`));
     }
 
     setEdges(newEdges);
@@ -474,15 +474,16 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
       }
     }
 
+    setIsTemplatesOpen(false);
     setTimeout(() => reactFlowInstance.fitView({ padding: 0.2 }), 60);
-  }, [firestoreNodes, persistEdges, reactFlowInstance]);
+  }, [firestoreNodes, createTunnelEdge, persistEdges, reactFlowInstance]);
 
-  // Cave Preset 3: Clear all edges (clean slate)
+  // Disconnect / Clear all edges
   const handleClearAllEdges = useCallback(() => {
-    if (window.confirm('Clear all tunnel connections? You can redraw custom tunnels between any stations.')) {
+    if (window.confirm('Disconnect and clear all tunnels? You can build custom connections anytime.')) {
       setEdges([]);
       persistEdges([]);
-      setSelectedEdgeId(null);
+      setIsTemplatesOpen(false);
     }
   }, [persistEdges]);
 
@@ -494,18 +495,21 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
       return;
     }
 
-    const newEdge: Edge = {
-      id: `tunnel-${connectSource}-${connectTarget}-${Date.now()}`,
-      source: connectSource,
-      target: connectTarget,
-      animated: true,
-      type: tunnelStyle,
-      style: { stroke: '#475569', strokeWidth: 2, strokeDasharray: '5,5' },
-      label: connectTunnelName.trim() || `Tunnel ${connectSource}↔${connectTarget}`,
-      labelStyle: { fill: '#475569', fontWeight: 600, fontSize: 10 },
-      labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95, rx: 4, ry: 4 },
-      labelBgPadding: [6, 2],
-    };
+    // Check duplicate
+    const exists = edges.some(
+      e => (e.source === connectSource && e.target === connectTarget) ||
+           (e.source === connectTarget && e.target === connectSource)
+    );
+    if (exists) {
+      alert('These two stations are already connected by a tunnel.');
+      return;
+    }
+
+    const newEdge = createTunnelEdge(
+      connectSource,
+      connectTarget,
+      connectTunnelName.trim() || `Gallery ${connectSource}↔${connectTarget}`
+    );
 
     setEdges(eds => {
       const updated = addEdge(newEdge, eds);
@@ -513,7 +517,6 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
       return updated;
     });
 
-    setIsConnectModalOpen(false);
     setConnectTunnelName('');
   };
 
@@ -525,7 +528,7 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
 
     try {
       const defaultData: Partial<MonitoringNode> = {
-        name: newName.trim() || `Bench Station ${id}`,
+        name: newName.trim() || `Station ${id}`,
         batteryPercentage: 100,
         tilt: Number(initialTilt),
         groundMovement: Number(initialDisp),
@@ -578,10 +581,10 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
   return (
     <div className="h-[calc(100vh-8rem)] w-full relative bg-slate-50 border border-slate-200 rounded-xl overflow-hidden shadow-sm">
 
-      {/* Top Floating Control Bar: Station Management & Cave Mapping */}
-      <div className="absolute top-4 left-4 z-10 flex flex-wrap items-center gap-2 bg-white/95 backdrop-blur-sm p-1.5 rounded-xl border border-slate-200 shadow-md">
+      {/* Simplified, Clean, Uncongested Top Control Bar */}
+      <div className="absolute top-4 left-4 z-10 flex items-center space-x-2 bg-white/95 backdrop-blur-sm p-1.5 rounded-xl border border-slate-200 shadow-sm">
         
-        {/* Add Station */}
+        {/* 1. Add Station */}
         <button
           id="btn-add-node"
           onClick={() => {
@@ -590,155 +593,98 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
             setNewName(`Station N0${nextNum}`);
             setIsAddModalOpen(true);
           }}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-700 text-white hover:bg-blue-800 transition-colors shadow-sm"
+          className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-700 text-white hover:bg-blue-800 transition-colors shadow-xs"
         >
           <Plus className="w-3.5 h-3.5" />
           <span>Add Node</span>
         </button>
 
-        {/* Connect Tunnel Modal Trigger */}
+        {/* 2. Connect / Disconnect Tunnels Hub */}
         <button
           onClick={() => {
-            if (firestoreNodes.length >= 2) {
+            if (firestoreNodes.length >= 2 && !connectSource) {
               setConnectSource(firestoreNodes[0].id);
               setConnectTarget(firestoreNodes[1].id);
-              setConnectTunnelName(`Gallery ${firestoreNodes[0].id}↔${firestoreNodes[1].id}`);
             }
-            setIsConnectModalOpen(true);
+            setIsTunnelManagerOpen(true);
           }}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors"
-          title="Connect any two stations with a named tunnel corridor"
+          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 hover:bg-slate-50 border border-slate-300 transition-colors shadow-xs"
+          title="Connect or disconnect station tunnels"
         >
           <Link2 className="w-3.5 h-3.5 text-indigo-600" />
-          <span>Connect Tunnel</span>
+          <span>Connect Tunnels</span>
+          <span className="ml-1 px-1.5 py-0.2 bg-indigo-50 text-indigo-700 font-bold rounded-full text-[10px]">
+            {edges.length}
+          </span>
         </button>
 
-        {/* Auto Layout */}
+        {/* 3. Auto-Layout */}
         <button
           id="btn-auto-layout"
           onClick={handleAutoLayout}
-          title="Arrange monitoring stations automatically using Dagre"
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
+          title="Auto arrange stations"
+          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 hover:bg-slate-50 border border-slate-300 transition-colors shadow-xs"
         >
-          <LayoutGrid className="w-3.5 h-3.5 text-slate-600" />
+          <LayoutGrid className="w-3.5 h-3.5 text-slate-500" />
           <span>Auto-Layout</span>
         </button>
 
-        <div className="h-4 w-px bg-slate-200 mx-0.5"></div>
-
-        {/* Cave Map Presets Dropdown */}
-        <div className="flex items-center space-x-1">
+        {/* 4. Compact Templates Menu */}
+        <div className="relative">
           <button
-            onClick={applyBranchingCaveLayout}
-            title="Create a Branching Cave/Mine Gallery with Central Incline"
-            className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-50 text-slate-700 hover:bg-blue-50 hover:text-blue-700 border border-slate-200 transition-colors"
+            onClick={() => setIsTemplatesOpen(prev => !prev)}
+            className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors"
           >
-            <GitBranch className="w-3.5 h-3.5 text-blue-600" />
-            <span>Cave Branches</span>
+            <span>Templates</span>
+            <ChevronDown className="w-3 h-3 text-slate-400" />
           </button>
 
-          <button
-            onClick={applyRingTunnelLayout}
-            title="Create a Circular Loop / Ring Tunnel Ventilation Circuit"
-            className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-50 text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 border border-slate-200 transition-colors"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Loop Ring</span>
-          </button>
-
-          <button
-            onClick={handleClearAllEdges}
-            title="Remove all connections to draw custom tunnels from scratch"
-            className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-50 text-slate-700 hover:bg-red-50 hover:text-red-700 border border-slate-200 transition-colors"
-          >
-            <Unlink className="w-3.5 h-3.5 text-slate-500" />
-            <span>Clear Tunnels</span>
-          </button>
+          {isTemplatesOpen && (
+            <div className="absolute top-full left-0 mt-1.5 w-44 bg-white rounded-xl shadow-lg border border-slate-200 py-1 z-30 animate-in fade-in zoom-in-95">
+              <button
+                onClick={applyBranchingCaveLayout}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-700 flex items-center space-x-2"
+              >
+                <GitBranch className="w-3.5 h-3.5 text-blue-600" />
+                <span>Cave Branching</span>
+              </button>
+              <button
+                onClick={applyRingTunnelLayout}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 flex items-center space-x-2"
+              >
+                <Link2 className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Perimeter Loop</span>
+              </button>
+              <div className="h-px bg-slate-100 my-1"></div>
+              <button
+                onClick={handleClearAllEdges}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 flex items-center space-x-2"
+              >
+                <Unlink className="w-3.5 h-3.5" />
+                <span>Disconnect All</span>
+              </button>
+            </div>
+          )}
         </div>
 
-        <div className="h-4 w-px bg-slate-200 mx-0.5"></div>
-
-        {/* Tunnel Corridor Style Toggle */}
-        <div className="flex items-center space-x-1 bg-slate-100 p-0.5 rounded-lg text-xs font-medium text-slate-600">
-          <span className="text-[10px] uppercase font-bold text-slate-400 px-1">Tunnel:</span>
-          <button
-            onClick={() => setTunnelStyle('smoothstep')}
-            className={`px-2 py-1 rounded text-xs transition-colors ${
-              tunnelStyle === 'smoothstep' ? 'bg-white font-bold text-blue-700 shadow-xs' : 'hover:text-slate-900'
-            }`}
-            title="Orthogonal 90° mine cross-cut corridors"
-          >
-            Cross-Cut
-          </button>
-          <button
-            onClick={() => setTunnelStyle('default')}
-            className={`px-2 py-1 rounded text-xs transition-colors ${
-              tunnelStyle === 'default' ? 'bg-white font-bold text-blue-700 shadow-xs' : 'hover:text-slate-900'
-            }`}
-            title="Smooth natural cave gallery curves"
-          >
-            Curved
-          </button>
-          <button
-            onClick={() => setTunnelStyle('straight')}
-            className={`px-2 py-1 rounded text-xs transition-colors ${
-              tunnelStyle === 'straight' ? 'bg-white font-bold text-blue-700 shadow-xs' : 'hover:text-slate-900'
-            }`}
-            title="Straight blast drift tunnels"
-          >
-            Straight
-          </button>
-        </div>
       </div>
 
-      {/* Top Right: Active Stations & Tunnels Count Badge */}
-      <div className="absolute top-4 right-4 z-10 flex items-center space-x-2">
-        <div className="bg-white/95 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 font-medium shadow-sm flex items-center space-x-2">
-          <span><strong className="text-slate-900">{nodes.length}</strong> Stations</span>
-          <span className="text-slate-300">•</span>
-          <span><strong className="text-blue-700">{edges.length}</strong> Tunnels</span>
-        </div>
+      {/* Top Right: Compact Status Badge */}
+      <div className="absolute top-4 right-4 z-10 bg-white/95 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 font-medium shadow-sm flex items-center space-x-2">
+        <span><strong className="text-slate-900">{nodes.length}</strong> Stations</span>
+        <span className="text-slate-300">•</span>
+        <span><strong className="text-blue-700">{edges.length}</strong> Tunnels</span>
       </div>
-
-      {/* Interactive Helper Hint (Bottom Left) */}
-      <div className="absolute bottom-4 left-4 z-10 bg-white/90 backdrop-blur-sm px-3 py-2 rounded-lg border border-slate-200 text-xs text-slate-600 shadow-sm flex items-center space-x-2 max-w-md pointer-events-none">
-        <Info className="w-4 h-4 text-blue-600 flex-shrink-0" />
-        <span>
-          <strong>Cave Map Tip:</strong> Drag from any <strong>Blue dot</strong> to an <strong>Emerald dot</strong> to build custom tunnels. Connect any node to multiple nodes!
-        </span>
-      </div>
-
-      {/* Selected Edge Floating Action Bar (Delete Tunnel) */}
-      {selectedEdgeId && (
-        <div className="absolute bottom-4 right-4 z-10 flex items-center space-x-2 bg-white p-2 rounded-xl border border-blue-200 shadow-lg animate-in fade-in slide-in-from-bottom-2">
-          <div className="text-xs text-slate-700 font-semibold px-2">
-            Selected Tunnel: <span className="font-mono text-blue-700 font-bold">{selectedEdgeId}</span>
-          </div>
-          <button
-            onClick={handleDeleteSelectedEdge}
-            className="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5 text-red-600" />
-            <span>Delete Tunnel</span>
-          </button>
-          <button
-            onClick={() => setSelectedEdgeId(null)}
-            className="p-1 text-slate-400 hover:text-slate-600 rounded"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
 
       {/* React Flow Canvas */}
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
-        onEdgeClick={onEdgeClick}
         onNodeDragStop={onNodeDragStop}
         connectionLineType={ConnectionLineType.SmoothStep}
         connectionLineStyle={{ stroke: '#2563eb', strokeWidth: 2, strokeDasharray: '4,4' }}
@@ -750,90 +696,160 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
         <Controls className="!bg-white !border-slate-200 !shadow-sm !rounded-lg" />
       </ReactFlow>
 
-      {/* Connect Tunnels Modal */}
-      {isConnectModalOpen && (
+      {/* CONNECT & DISCONNECT TUNNELS MANAGER MODAL */}
+      {isTunnelManagerOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-sm w-full p-6">
+          <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-md w-full p-6 animate-in fade-in zoom-in-95">
+            
+            {/* Modal Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center space-x-2">
                 <Link2 className="w-4 h-4 text-blue-600" />
-                <h3 className="text-base font-bold text-slate-900">Connect Cave Tunnels</h3>
+                <h3 className="text-base font-bold text-slate-900">Connect & Disconnect Tunnels</h3>
               </div>
-              <button onClick={() => setIsConnectModalOpen(false)} className="text-slate-400 hover:text-slate-600">
+              <button
+                onClick={() => setIsTunnelManagerOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-md"
+              >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateCustomTunnel} className="space-y-4 mt-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">From Station (Source)</label>
-                <select
-                  value={connectSource}
-                  onChange={(e) => setConnectSource(e.target.value)}
-                  className="w-full text-sm border border-slate-300 rounded-lg p-2 font-medium"
-                >
-                  <option value="">Select source station...</option>
-                  {firestoreNodes.map(n => (
-                    <option key={n.id} value={n.id}>
-                      {n.id} - {n.name || `Station ${n.id}`}
-                    </option>
-                  ))}
-                </select>
+            {/* Section 1: Connect Two Stations */}
+            <form onSubmit={handleCreateCustomTunnel} className="space-y-3 mt-4 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+              <div className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                + Create New Connection
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">From Station</label>
+                  <select
+                    value={connectSource}
+                    onChange={(e) => setConnectSource(e.target.value)}
+                    className="w-full text-xs border border-slate-300 rounded-lg p-2 bg-white font-medium"
+                  >
+                    <option value="">Select station...</option>
+                    {firestoreNodes.map(n => (
+                      <option key={n.id} value={n.id}>
+                        {n.id} - {n.name || `Station ${n.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">To Station</label>
+                  <select
+                    value={connectTarget}
+                    onChange={(e) => setConnectTarget(e.target.value)}
+                    className="w-full text-xs border border-slate-300 rounded-lg p-2 bg-white font-medium"
+                  >
+                    <option value="">Select station...</option>
+                    {firestoreNodes.map(n => (
+                      <option key={n.id} value={n.id} disabled={n.id === connectSource}>
+                        {n.id} - {n.name || `Station ${n.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">To Station (Destination)</label>
-                <select
-                  value={connectTarget}
-                  onChange={(e) => setConnectTarget(e.target.value)}
-                  className="w-full text-sm border border-slate-300 rounded-lg p-2 font-medium"
-                >
-                  <option value="">Select target station...</option>
-                  {firestoreNodes.map(n => (
-                    <option key={n.id} value={n.id} disabled={n.id === connectSource}>
-                      {n.id} - {n.name || `Station ${n.id}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Tunnel / Gallery Name (Optional)</label>
                 <input
                   type="text"
                   value={connectTunnelName}
                   onChange={(e) => setConnectTunnelName(e.target.value)}
-                  className="w-full text-sm border border-slate-300 rounded-lg p-2"
-                  placeholder="e.g. Main Incline Drift, Cross-Cut 1"
+                  className="w-full text-xs border border-slate-300 rounded-lg p-2 bg-white"
+                  placeholder="Optional Tunnel Name (e.g. Gallery 1, Main Drift)"
                 />
               </div>
 
-              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setIsConnectModalOpen(false)}
-                  className="px-3.5 py-2 text-xs font-semibold rounded-lg text-slate-600 hover:bg-slate-100 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={!connectSource || !connectTarget || connectSource === connectTarget}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50 transition-colors flex items-center space-x-1.5"
-                >
-                  <Link2 className="w-3.5 h-3.5" />
-                  <span>Build Tunnel</span>
-                </button>
-              </div>
+              <button
+                type="submit"
+                disabled={!connectSource || !connectTarget || connectSource === connectTarget}
+                className="w-full py-2 text-xs font-semibold rounded-lg bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50 transition-colors flex items-center justify-center space-x-1.5 shadow-xs"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Connect Tunnel</span>
+              </button>
             </form>
+
+            {/* Section 2: Active Tunnels (Disconnect One-Click) */}
+            <div className="mt-5">
+              <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-100">
+                <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                  Active Connections ({edges.length})
+                </span>
+                {edges.length > 0 && (
+                  <button
+                    onClick={handleClearAllEdges}
+                    className="text-[11px] font-semibold text-red-600 hover:text-red-700"
+                  >
+                    Disconnect All
+                  </button>
+                )}
+              </div>
+
+              {edges.length === 0 ? (
+                <div className="text-center py-6 text-xs text-slate-400">
+                  No tunnels connected. Select two stations above to create a tunnel connection.
+                </div>
+              ) : (
+                <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                  {edges.map((edge) => (
+                    <div
+                      key={edge.id}
+                      className="flex items-center justify-between p-2.5 rounded-lg bg-white border border-slate-200 text-xs hover:border-slate-300 transition-colors"
+                    >
+                      <div className="flex items-center space-x-2">
+                        <span className="font-bold text-slate-800 px-1.5 py-0.5 bg-slate-100 rounded text-[11px]">
+                          {edge.source}
+                        </span>
+                        <span className="text-slate-400">⟷</span>
+                        <span className="font-bold text-slate-800 px-1.5 py-0.5 bg-slate-100 rounded text-[11px]">
+                          {edge.target}
+                        </span>
+                        {edge.label && (
+                          <span className="text-slate-500 text-[11px] truncate max-w-[120px]">
+                            ({edge.label})
+                          </span>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={() => handleDisconnectTunnel(edge.id)}
+                        title="Disconnect this connection"
+                        className="px-2 py-1 text-[11px] font-semibold rounded-md bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 border border-red-200 transition-colors flex items-center space-x-1"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Disconnect</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="mt-5 pt-3 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsTunnelManagerOpen(false)}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
+              >
+                Done
+              </button>
+            </div>
+
           </div>
         </div>
       )}
 
-      {/* Add Node Modal */}
+      {/* ADD STATION MODAL */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-sm w-full p-6">
+          <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-sm w-full p-6 animate-in fade-in zoom-in-95">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900">Add Monitoring Station</h3>
               <button onClick={() => setIsAddModalOpen(false)} className="text-slate-400 hover:text-slate-600">
@@ -861,7 +877,7 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   className="w-full text-sm border border-slate-300 rounded-lg p-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="e.g. Cave Sector 4 Incline"
+                  placeholder="e.g. South Drift Sensor"
                 />
               </div>
 
@@ -909,10 +925,10 @@ const NodeGraphContent: React.FC<NodeGraphPageProps> = ({
         </div>
       )}
 
-      {/* Edit Node Modal */}
+      {/* EDIT STATION MODAL */}
       {isEditModalOpen && editingNode && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-sm w-full p-6">
+          <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-sm w-full p-6 animate-in fade-in zoom-in-95">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900">Edit Station {editingNode.id}</h3>
               <button onClick={() => setIsEditModalOpen(false)} className="text-slate-400 hover:text-slate-600">

@@ -1,12 +1,13 @@
 import type { FC } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { Radio, AlertTriangle, ShieldCheck, ShieldAlert, Trash2, Edit2, Zap } from 'lucide-react';
+import { Radio, AlertTriangle, ShieldCheck, ShieldAlert, Trash2, Edit2, Zap, Link2 } from 'lucide-react';
 import { MonitoringNode, RiskLevel } from '../types';
 
 export interface StationNodeData extends MonitoringNode {
   onDelete?: (id: string) => void;
   onEdit?: (node: MonitoringNode) => void;
   onSelect?: (id: string) => void;
+  onConnectFrom?: (id: string) => void;
   isSelected?: boolean;
 }
 
@@ -130,6 +131,13 @@ export const StationNode: FC<NodeProps<StationNodeData>> = ({ id, data }) => {
 
         {/* Action icons */}
         <div className="flex items-center space-x-1" onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={() => data.onConnectFrom && data.onConnectFrom(id)}
+            title="Connect tunnel from this station"
+            className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+          >
+            <Link2 className="w-3.5 h-3.5" />
+          </button>
           <button
             onClick={() => data.onEdit && data.onEdit(data)}
             title="Edit station details"
