@@ -1,4 +1,4 @@
-import React from 'react';
+import type { FC } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { Radio, AlertTriangle, ShieldCheck, ShieldAlert, Trash2, Edit2, Zap } from 'lucide-react';
 import { MonitoringNode, RiskLevel } from '../types';
@@ -10,7 +10,7 @@ export interface StationNodeData extends MonitoringNode {
   isSelected?: boolean;
 }
 
-export const StationNode: React.FC<NodeProps<StationNodeData>> = ({ id, data }) => {
+export const StationNode: FC<NodeProps<StationNodeData>> = ({ id, data }) => {
   const riskLevel: RiskLevel = data.riskLevel || 'LOW';
   const riskScore = data.riskScore ?? (riskLevel === 'HIGH' ? 5 : riskLevel === 'MEDIUM' ? 3 : 0);
   const buzzerState = data.buzzerState || 'silent';

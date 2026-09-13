@@ -1,4 +1,4 @@
-import React from 'react';
+import type { FC } from 'react';
 import { Activity, Network, Volume2, VolumeX } from 'lucide-react';
 import { MonitoringNode } from '../types';
 
@@ -15,7 +15,7 @@ interface NavbarProps {
   backendOnline?: boolean;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({
+export const Navbar: FC<NavbarProps> = ({
   currentTab,
   onSelectTab,
   audioEnabled,
