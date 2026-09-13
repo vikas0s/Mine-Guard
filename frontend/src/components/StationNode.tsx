@@ -60,7 +60,60 @@ export const StationNode: React.FC<NodeProps<StationNodeData>> = ({ id, data }) 
         data.isSelected ? 'ring-2 ring-blue-500 ring-offset-2' : ''
       } ${riskStyle.wrapper}`}
     >
-      <Handle type="target" position={Position.Top} className="!w-2 !h-2 !bg-slate-400" />
+      {/* 4-Way Multi-Directional Handles for Cave / Mine Gallery Branching */}
+      {/* TOP: Inbound & Outbound */}
+      <Handle
+        type="target"
+        position={Position.Top}
+        id="top-in"
+        style={{ left: '35%' }}
+        title="Inbound Tunnel (Top)"
+        className="!w-2.5 !h-2.5 !bg-emerald-500 !border-2 !border-white shadow-sm hover:!scale-150 transition-transform cursor-crosshair"
+      />
+      <Handle
+        type="source"
+        position={Position.Top}
+        id="top-out"
+        style={{ left: '65%' }}
+        title="Outbound Tunnel (Top)"
+        className="!w-2.5 !h-2.5 !bg-blue-600 !border-2 !border-white shadow-sm hover:!scale-150 transition-transform cursor-crosshair"
+      />
+
+      {/* LEFT: Inbound & Outbound */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="left-in"
+        style={{ top: '35%' }}
+        title="Inbound Tunnel (Left)"
+        className="!w-2.5 !h-2.5 !bg-emerald-500 !border-2 !border-white shadow-sm hover:!scale-150 transition-transform cursor-crosshair"
+      />
+      <Handle
+        type="source"
+        position={Position.Left}
+        id="left-out"
+        style={{ top: '65%' }}
+        title="Outbound Tunnel (Left)"
+        className="!w-2.5 !h-2.5 !bg-blue-600 !border-2 !border-white shadow-sm hover:!scale-150 transition-transform cursor-crosshair"
+      />
+
+      {/* RIGHT: Inbound & Outbound */}
+      <Handle
+        type="target"
+        position={Position.Right}
+        id="right-in"
+        style={{ top: '35%' }}
+        title="Inbound Tunnel (Right)"
+        className="!w-2.5 !h-2.5 !bg-emerald-500 !border-2 !border-white shadow-sm hover:!scale-150 transition-transform cursor-crosshair"
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="right-out"
+        style={{ top: '65%' }}
+        title="Outbound Tunnel (Right)"
+        className="!w-2.5 !h-2.5 !bg-blue-600 !border-2 !border-white shadow-sm hover:!scale-150 transition-transform cursor-crosshair"
+      />
 
       {/* Header: Node ID, Name & Controls */}
       <div className="flex items-center justify-between pb-2 border-b border-slate-200/80">
@@ -150,7 +203,23 @@ export const StationNode: React.FC<NodeProps<StationNodeData>> = ({ id, data }) 
         </span>
       </div>
 
-      <Handle type="source" position={Position.Bottom} className="!w-2 !h-2 !bg-slate-400" />
+      {/* BOTTOM: Inbound & Outbound */}
+      <Handle
+        type="target"
+        position={Position.Bottom}
+        id="bottom-in"
+        style={{ left: '35%' }}
+        title="Inbound Tunnel (Bottom)"
+        className="!w-2.5 !h-2.5 !bg-emerald-500 !border-2 !border-white shadow-sm hover:!scale-150 transition-transform cursor-crosshair"
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="bottom-out"
+        style={{ left: '65%' }}
+        title="Outbound Tunnel (Bottom)"
+        className="!w-2.5 !h-2.5 !bg-blue-600 !border-2 !border-white shadow-sm hover:!scale-150 transition-transform cursor-crosshair"
+      />
     </div>
   );
 };

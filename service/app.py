@@ -462,6 +462,33 @@ def delete_node(node_id):
     return jsonify({"status": "deleted", "nodeId": node_id})
 
 
+@app.route("/api/network/edges", methods=["GET"])
+def get_network_edges():
+    try:
+        doc = db.collection("network").document("topology").get()
+        if doc.exists:
+            return jsonify(doc.to_dict().get("edges", []))
+        return jsonify([])
+    except Exception as e:
+        app.logger.warning(f"Failed to fetch network edges: {e}")
+        return jsonify([])
+
+
+@app.route("/api/network/edges", methods=["POST", "PUT"])
+def save_network_edges():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        edges = data.get("edges", data if isinstance(data, list) else [])
+        db.collection("network").document("topology").set({
+            "edges": edges,
+            "updatedAt": datetime.now(timezone.utc).isoformat()
+        }, merge=True)
+        return jsonify({"status": "saved", "count": len(edges)})
+    except Exception as e:
+        app.logger.error(f"Failed to save network edges: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/v1/ingest", methods=["POST"])
 def ingest_reading():
     data = request.get_json(force=True, silent=True)
